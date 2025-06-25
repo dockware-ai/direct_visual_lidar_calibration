@@ -9,16 +9,10 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
 
-if($ENV{ROS_VERSION} EQUAL 1)
-  # ROS1
-  find_package(catkin REQUIRED COMPONENTS rosbag sensor_msgs cv_bridge)
-  catkin_package()
-else()
-  # ROS2
-  find_package(ament_cmake_auto REQUIRED)
-  find_package(ament_cmake_python REQUIRED)
-  ament_auto_find_build_dependencies()
-endif()
+# ROS2
+find_package(ament_cmake_auto REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+ament_auto_find_build_dependencies()
 
 find_package(PCL REQUIRED)
 find_package(Ceres REQUIRED)
@@ -84,29 +78,13 @@ target_link_libraries(direct_visual_lidar_calibration
 )
 
 
-if($ENV{ROS_VERSION} EQUAL 1)
-  # ROS1
-  add_executable(preprocess
-    src/preprocess_ros1.cpp
-  )
-  target_link_libraries(preprocess
-    direct_visual_lidar_calibration
-  )
-  target_include_directories(preprocess PUBLIC
-    ${catkin_INCLUDE_DIRS}
-  )
-  target_link_libraries(preprocess
-    ${catkin_LIBRARIES}
-  )
-else()
-  # ROS2
-  ament_auto_add_executable(preprocess
-    src/preprocess_ros2.cpp
-  )
-  target_link_libraries(preprocess
-    direct_visual_lidar_calibration
-  )
-endif()
+# ROS2
+ament_auto_add_executable(preprocess
+src/preprocess_ros2.cpp
+)
+target_link_libraries(preprocess
+direct_visual_lidar_calibration
+)
 
 # preprocess_map
 add_executable(preprocess_map
@@ -179,12 +157,11 @@ install(
   lib/${PROJECT_NAME}
 )
 
-if($ENV{ROS_VERSION} EQUAL 1)
-  # ROS1
-else()
-  # ROS2
-  ament_python_install_package(${PROJECT_NAME})
-  install(PROGRAMS scripts/find_matches_superglue.py DESTINATION lib/${PROJECT_NAME})
-  ament_export_libraries(direct_visual_lidar_calibration)
-  ament_auto_package()
-endif()
+ament_python_install_package(${PROJECT_NAME})
+install(PROGRAMS 
+  scripts/find_matches_superglue.py 
+  scripts/find_matches_sift.py 
+  scripts/find_matches_kornia.py 
+  DESTINATION lib/${PROJECT_NAME})
+ament_export_libraries(direct_visual_lidar_calibration)
+ament_auto_package()
