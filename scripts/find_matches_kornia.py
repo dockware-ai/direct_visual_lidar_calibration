@@ -30,11 +30,27 @@ def main():
   parser.add_argument('--min_matches', type=int, default=20, help='Minimum number of matches required')
   parser.add_argument('--show_keypoints', action='store_true', help='Show the detected keypoints')
   parser.add_argument('--force_cpu', action='store_true', help='Force pytorch to run in CPU mode.')
+  parser.add_argument('--lightweight_only', action='store_true', help='Use only lightweight features, skip LoFTR entirely')
   parser.add_argument('--rotate_camera', type=int, default=0, help='Rotate camera image before matching (CW 0, 90, 180, or 270) (CW)')
   parser.add_argument('--rotate_lidar', type=int, default=0, help='Rotate LiDAR image before matching (0, 90, 180, or 270) (CW)')
 
   opt = parser.parse_args()
   print(opt)
+  
+  # Early system info
+  import psutil
+  print(f"System memory info at startup:")
+  mem = psutil.virtual_memory()
+  print(f"  Total memory: {mem.total / (1024**3):.2f} GB")
+  print(f"  Available memory: {mem.available / (1024**3):.2f} GB")
+  print(f"  Memory usage: {mem.percent}%")
+  print(f"  CPU count: {psutil.cpu_count()}")
+  
+  print(f"Environment variables:")
+  import os
+  print(f"  PYTORCH_NNPACK_DISABLE: {os.environ.get('PYTORCH_NNPACK_DISABLE', 'Not set')}")
+  print(f"  OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'Not set')}")
+  print(f"  MKL_NUM_THREADS: {os.environ.get('MKL_NUM_THREADS', 'Not set')}")
 
   torch.set_grad_enabled(False)
   
@@ -80,40 +96,101 @@ def main():
   with open(data_path + '/calib.json', 'r') as f:
     calib_config = json.load(f)
 
-  # Initialize LoFTR matcher with better error handling
+  # Initialize matcher with lightweight alternatives first
   use_sift_fallback = False
-  try:
-    print(f"Loading LoFTR model ({opt.model_type})...")
-    if opt.model_type == 'outdoor':
-      matcher = LoFTR(pretrained='outdoor').eval()
-    else:
-      matcher = LoFTR(pretrained='indoor').eval()
-    
-    # Move to device after loading to avoid memory issues
-    matcher = matcher.to(device)
-    print(f"Successfully loaded LoFTR model ({opt.model_type})")
-    
-  except Exception as e:
-    print(f"Error loading LoFTR model: {e}")
-    print("Falling back to basic Kornia SIFT feature matching...")
-    
-    # Fallback to basic Kornia SIFT-like features if LoFTR fails
+  use_lightweight = True if opt.lightweight_only else True  # Start with lightweight options
+  
+  # Try lightweight alternatives first before heavy LoFTR
+  if use_lightweight:
+    print("Trying lightweight Kornia features first...")
     try:
-      from kornia.feature import SIFTFeature
-      matcher = SIFTFeature(num_features=opt.max_keypoints).to(device)
-      use_sift_fallback = True
-      print("Successfully loaded SIFT fallback")
-    except Exception as e2:
-      print(f"Error loading SIFT fallback: {e2}")
+      from kornia.feature import KeyNet, HardNet, LAFDescriptor, SIFTFeature
+      print("Creating lightweight KeyNet + HardNet matcher...")
+      
+      # Use KeyNet (lightweight keypoint detector) + HardNet (lightweight descriptor)
+      keypoint_detector = KeyNet(pretrained=True).eval().to(device)
+      descriptor = HardNet(pretrained=True).eval().to(device)
+      
+      # Combine into LAF descriptor
+      matcher = LAFDescriptor(descriptor, patch_size=32).to(device)
+      print("Successfully loaded lightweight KeyNet+HardNet matcher")
+      use_sift_fallback = True  # Use special handling for this matcher
+      
+    except Exception as e1:
+      print(f"Error loading lightweight KeyNet+HardNet: {e1}")
+      
+      # Fallback to basic Kornia SIFT-like features
+      try:
+        from kornia.feature import SIFTFeature
+        print("Creating Kornia SIFT fallback...")
+        matcher = SIFTFeature(num_features=opt.max_keypoints//2).to(device)  # Use fewer features
+        use_sift_fallback = True
+        print("Successfully loaded SIFT fallback")
+      except Exception as e2:
+        print(f"Error loading SIFT fallback: {e2}")
+        use_lightweight = False  # Fall back to trying LoFTR
+  
+  # Only try LoFTR if lightweight options failed AND not forced to lightweight only
+  if not use_lightweight and not opt.lightweight_only:
+    try:
+      print(f"Loading LoFTR model ({opt.model_type})...")
+      print(f"Available memory before model loading...")
+      
+      import psutil
+      import gc
+      gc.collect()
+      
+      print(f"Memory usage: {psutil.virtual_memory().percent}%")
+      print(f"Available memory: {psutil.virtual_memory().available / (1024**3):.2f} GB")
+      
+      # Try indoor model first (smaller than outdoor)
+      print("Creating LoFTR indoor model (smaller than outdoor)...")
+      print(f"Memory before LoFTR() call: {psutil.virtual_memory().percent}%")
+      matcher = LoFTR(pretrained='indoor')
+      print("Model object created, checking memory...")
+      print(f"Memory after LoFTR() call: {psutil.virtual_memory().percent}%")
+      print("Setting to eval mode...")
+      matcher = matcher.eval()
+      print("Eval mode set successfully")
+      
+      print(f"Memory after model creation: {psutil.virtual_memory().percent}%")
+      
+      # Move to device after loading to avoid memory issues
+      print(f"Moving model to device: {device}")
+      matcher = matcher.to(device)
+      print(f"Successfully loaded LoFTR model (indoor)")
+      print(f"Final memory usage: {psutil.virtual_memory().percent}%")
+      
+    except Exception as e:
+      print(f"Error loading LoFTR model: {e}")
+      import traceback
+      traceback.print_exc()
       print("Using OpenCV SIFT as final fallback")
       matcher = None
       use_sift_fallback = True
 
   for bag_name in calib_config['meta']['bag_names']:
     print('processing %s' % bag_name)
+    
+    # Memory check before processing each image
+    print(f"Memory before processing {bag_name}: {psutil.virtual_memory().percent}%")
 
-    camera_image = cv2.imread('%s/%s.png' % (data_path, bag_name), 0)
-    lidar_image = cv2.imread('%s/%s_lidar_intensities.png' % (data_path, bag_name), 0)
+    camera_path = '%s/%s.png' % (data_path, bag_name)
+    lidar_path = '%s/%s_lidar_intensities.png' % (data_path, bag_name)
+    
+    print(f"Loading camera image: {camera_path}")
+    camera_image = cv2.imread(camera_path, 0)
+    if camera_image is None:
+      print(f'ERROR: Could not load camera image {camera_path}')
+    else:
+      print(f"Loaded camera image: {camera_image.shape}")
+    
+    print(f"Loading lidar image: {lidar_path}")
+    lidar_image = cv2.imread(lidar_path, 0)
+    if lidar_image is None:
+      print(f'ERROR: Could not load lidar image {lidar_path}')
+    else:
+      print(f"Loaded lidar image: {lidar_image.shape}")
 
     if camera_image is None or lidar_image is None:
       print(f'Warning: Could not load images for {bag_name}')
@@ -127,8 +204,15 @@ def main():
       lidar_image = cv2.rotate(lidar_image, code)
 
     # Preprocess images
+    print(f"Preprocessing camera image...")
     img0_tensor = preprocess_image(camera_image)
+    print(f"Camera tensor shape: {img0_tensor.shape}")
+    
+    print(f"Preprocessing lidar image...")
     img1_tensor = preprocess_image(lidar_image)
+    print(f"Lidar tensor shape: {img1_tensor.shape}")
+    
+    print(f"Memory after preprocessing: {psutil.virtual_memory().percent}%")
 
     try:
       if use_sift_fallback and matcher is not None:
@@ -190,12 +274,18 @@ def main():
         
       else:
         # Use LoFTR
+        print(f"Preparing input for LoFTR matching...")
+        print(f"Memory before creating input dict: {psutil.virtual_memory().percent}%")
         input_dict = {
           'image0': img0_tensor,
           'image1': img1_tensor
         }
+        print(f"Input dict created, running LoFTR inference...")
+        print(f"Memory before inference: {psutil.virtual_memory().percent}%")
         
         correspondences = matcher(input_dict)
+        print(f"LoFTR inference completed!")
+        print(f"Memory after inference: {psutil.virtual_memory().percent}%")
         
         kpts0 = correspondences['keypoints0'].cpu().numpy()
         kpts1 = correspondences['keypoints1'].cpu().numpy()

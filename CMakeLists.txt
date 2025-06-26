@@ -162,6 +162,8 @@ install(PROGRAMS
   scripts/find_matches_superglue.py 
   scripts/find_matches_sift.py 
   scripts/find_matches_kornia.py 
+  scripts/find_matches_xfeat.py 
+  scripts/find_matches_simple.py 
   DESTINATION lib/${PROJECT_NAME})
 ament_export_libraries(direct_visual_lidar_calibration)
 ament_auto_package()

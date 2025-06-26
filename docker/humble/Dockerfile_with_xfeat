@@ -17,33 +17,46 @@ RUN git clone https://github.com/ceres-solver/ceres-solver \
   && make install \
   && rm -rf /root/ceres-solver
 
-# Install all Python dependencies early so they get cached
+# Install all system dependencies early so they get cached
 RUN apt-fast update \
   && apt-fast install -y --no-install-recommends \
-  python3-pip python3-numpy python3-torch python3-torchvision python3-matplotlib python3-opencv \
+  python3-pip python3-numpy python3-matplotlib python3-opencv \
   xvfb mesa-utils libgl1-mesa-glx \
+  git \
   && apt-fast clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Install Kornia and related packages for LoFTR-based feature matching
-# Use specific versions to avoid compatibility issues and reduce memory usage
-RUN pip3 install --no-cache-dir \
-  kornia \
-  kornia-moons \
-  timm \
-  einops \
-  yacs \
-  psutil
+# Install PyTorch CPU version for XFeat and LightGlue
+# Use CPU-only version to reduce memory usage
+RUN pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install additional dependencies for computer vision
+RUN pip3 install --no-cache-dir psutil kornia h5py
+
+# Install LightGlue from GitHub (not available on PyPI)
+WORKDIR /tmp
+RUN git clone https://github.com/cvg/LightGlue.git \
+  && cd LightGlue \
+  && pip3 install --no-cache-dir .
+
+# Install XFeat - accelerated features
+# Since XFeat doesn't have setup.py, we'll clone and set up manually
+RUN git clone https://github.com/verlab/accelerated_features.git xfeat_repo \
+  && mkdir -p /opt/xfeat \
+  && cp -r xfeat_repo/* /opt/xfeat/ \
+  && rm -rf xfeat_repo
+
+# Add XFeat to Python path
+ENV PYTHONPATH="/opt/xfeat:${PYTHONPATH}"
 
 # Set environment variables for better PyTorch performance on ARM64/emulated systems
 ENV PYTORCH_NNPACK_DISABLE=1
 ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 
-# Copy project files at the very end so changes don't invalidate expensive layers above
-COPY . /root/ros2_ws/src/direct_visual_lidar_calibration
-
+# First, copy only the package.xml to resolve dependencies
 WORKDIR /root/ros2_ws
+COPY package.xml /root/ros2_ws/src/direct_visual_lidar_calibration/
 
 RUN apt-fast update && \
   rosdep install -i --from-paths src --simulate | \
@@ -51,6 +64,9 @@ RUN apt-fast update && \
   xargs apt-fast install --no-install-recommends -y < /tmp/depends && \
   apt-fast clean && \
   rm -rf /var/lib/apt/lists/*
+
+# Now copy the rest of the project files AFTER dependency installation
+COPY . /root/ros2_ws/src/direct_visual_lidar_calibration
 
 # Build with better error handling and logging
 RUN /bin/bash -c ". /opt/ros/humble/setup.bash; colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release --packages-select direct_visual_lidar_calibration"

@@ -17,28 +17,13 @@ RUN git clone https://github.com/ceres-solver/ceres-solver \
   && make install \
   && rm -rf /root/ceres-solver
 
-# Install all Python dependencies early so they get cached
+# Install minimal Python dependencies for SIFT early so they get cached
 RUN apt-fast update \
   && apt-fast install -y --no-install-recommends \
-  python3-pip python3-numpy python3-torch python3-torchvision python3-matplotlib python3-opencv \
+  python3-matplotlib \
   xvfb mesa-utils libgl1-mesa-glx \
   && apt-fast clean \
   && rm -rf /var/lib/apt/lists/*
-
-# Install Kornia and related packages for LoFTR-based feature matching
-# Use specific versions to avoid compatibility issues and reduce memory usage
-RUN pip3 install --no-cache-dir \
-  kornia \
-  kornia-moons \
-  timm \
-  einops \
-  yacs \
-  psutil
-
-# Set environment variables for better PyTorch performance on ARM64/emulated systems
-ENV PYTORCH_NNPACK_DISABLE=1
-ENV OMP_NUM_THREADS=1
-ENV MKL_NUM_THREADS=1
 
 # Copy project files at the very end so changes don't invalidate expensive layers above
 COPY . /root/ros2_ws/src/direct_visual_lidar_calibration
